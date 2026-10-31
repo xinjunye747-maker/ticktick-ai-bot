@@ -49,17 +49,24 @@ def process_tasks():
         )
 
         result_text = None
-        # 兼容尝试当前最新模型版本
-        # 优先使用官方指定的 gemini-3.8-flash 最新模型
-        for m in ["gemini-3.8-flash", "gemini-2.5-flash"]:
-            try:
-                resp = ai_client.models.generate_content(model=m, contents=prompt)
-                result_text = resp.text
-                if result_text:
-                    print(f"模型 {m} 调用成功！")
-                    break
-            except Exception as err:
-                print(f"尝试模型 {m} 异常: {err}")
+        models_to_try = ["gemini-3.8-flash", "gemini-3.8-pro", "gemini-3.5-flash"]
+        
+        for m in models_to_try:
+            # 针对 503 临时高峰，每个模型自动重试 3 次
+            for attempt in range(3):
+                try:
+                    print(f"正在调用 {m} (尝试第 {attempt + 1}/3 次)...")
+                    resp = ai_client.models.generate_content(model=m, contents=prompt)
+                    result_text = resp.text
+                    if result_text:
+                        print(f"模型 {m} 调用成功！")
+                        break
+                except Exception as err:
+                    print(f"模型 {m} 遇到临时波动: {err}")
+                    import time
+                    time.sleep(3)  # 等待 3 秒后重试
+            if result_text:
+                break
 
         if not result_text:
             print("所有模型生成均未返回内容，跳过本次回写。")
