@@ -1,15 +1,14 @@
 import os
 import requests
 from datetime import datetime, timezone, timedelta
-import google.generativeai as genai
+from google import genai
 
 TICKTICK_TOKEN = os.getenv("TICKTICK_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 PROJECT_ID = "6ad81871ea96b1cc24dd80b6"
 
 HEADERS = {"Authorization": f"Bearer {TICKTICK_TOKEN}"}
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+ai_client = genai.Client(api_key=GEMINI_KEY)
 
 def get_beijing_time():
     utc_now = datetime.now(timezone.utc)
@@ -49,11 +48,20 @@ def process_tasks():
             f"请直接输出排版清晰的高质量内容。"
         )
 
-        try:
-            ai_resp = model.generate_content(prompt)
-            result_text = ai_resp.text
-        except Exception as e:
-            print(f"调用 Gemini 失败: {e}")
+        result_text = None
+        # 兼容尝试当前最新模型版本
+        for m in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]:
+            try:
+                resp = ai_client.models.generate_content(model=m, contents=prompt)
+                result_text = resp.text
+                if result_text:
+                    print(f"模型 {m} 调用成功！")
+                    break
+            except Exception as err:
+                print(f"尝试模型 {m} 异常: {err}")
+
+        if not result_text:
+            print("所有模型生成均未返回内容，跳过本次回写。")
             continue
 
         new_task = {
