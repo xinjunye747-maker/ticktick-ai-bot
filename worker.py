@@ -50,7 +50,8 @@ def process_tasks():
 
         result_text = None
         # 兼容尝试当前最新模型版本
-        for m in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]:
+        # 优先使用官方指定的 gemini-3.8-flash 最新模型
+        for m in ["gemini-3.8-flash", "gemini-2.5-flash"]:
             try:
                 resp = ai_client.models.generate_content(model=m, contents=prompt)
                 result_text = resp.text
