@@ -36,32 +36,62 @@ def call_gemini_with_retry(prompt):
                 time.sleep(3)
     return None
 
-def check_already_pushed(today_prefix):
+def fetch_ticktick_context():
+    """
+    全量扫描滴答清单，提取：
+    1. 正在做的事（当前未完成待办）
+    2. 做过的事（已完成历史任务）
+    3. 历史认知感悟（往期推送的所有【认知觉醒】内容）
+    """
+    ongoing_tasks = []
+    completed_tasks = []
+    historical_insights = []
+
     try:
-        # 1. 检查收集箱是否存在当天的认知卡片
-        res = requests.get("https://api.dida365.com/open/v1/project", headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            projects = res.json()
-            inbox_id = None
-            for p in projects:
-                if p.get("name") in ["收集箱", "Inbox"]:
-                    inbox_id = p.get("id")
-                    break
-            if inbox_id:
-                inbox_data = requests.get(f"https://api.dida365.com/open/v1/project/{inbox_id}/data", headers=HEADERS, timeout=10)
-                if inbox_data.status_code == 200:
-                    for t in inbox_data.json().get("tasks", []):
-                        if today_prefix in t.get("title", ""):
-                            return True
-        # 2. 检查自定义 gemini 清单
-        gemini_data = requests.get(f"https://api.dida365.com/open/v1/project/{PROJECT_ID}/data", headers=HEADERS, timeout=10)
-        if gemini_data.status_code == 200:
-            for t in gemini_data.json().get("tasks", []):
-                if today_prefix in t.get("title", ""):
-                    return True
+        res = requests.get("https://api.dida365.com/open/v1/project", headers=HEADERS, timeout=12)
+        if res.status_code != 200:
+            print(f"获取清单列表失败 HTTP {res.status_code}")
+            return ongoing_tasks, completed_tasks, historical_insights
+
+        projects = res.json()
+        for p in projects:
+            p_id = p.get("id")
+            p_name = p.get("name", "未命名清单")
+
+            data_res = requests.get(f"https://api.dida365.com/open/v1/project/{p_id}/data", headers=HEADERS, timeout=12)
+            if data_res.status_code != 200:
+                continue
+
+            tasks = data_res.json().get("tasks", [])
+            for t in tasks:
+                title = t.get("title", "").strip()
+                content = (t.get("content") or "").strip()
+                status = t.get("status", 0)
+
+                if not title:
+                    continue
+
+                # 归档往期认知感悟
+                if "【认知觉醒】" in title or "认知跃迁" in title:
+                    historical_insights.append({
+                        "title": title,
+                        "content": content[:400]
+                    })
+                    continue
+
+                # 忽略机器生成的中间回复
+                if title.startswith("【整理结果】"):
+                    continue
+
+                if status == 0:
+                    ongoing_tasks.append(f"[{p_name}] {title}" + (f" ({content[:60]})" if content else ""))
+                elif status == 2:
+                    completed_tasks.append(f"[{p_name}] {title}")
+
     except Exception as e:
-        print(f"查重跳过: {e}")
-    return False
+        print(f"读取滴答清单全局上下文出错: {e}")
+
+    return ongoing_tasks, completed_tasks, historical_insights
 
 def push_daily_insights():
     bj_time = get_beijing_time()
@@ -69,38 +99,62 @@ def push_daily_insights():
     today_str = bj_time.strftime("%Y-%m-%dT00:00:00+0800")
     title_prefix = f"【认知觉醒】{date_str}"
 
-    # 查重：避免一天多次轮询产生重复卡片
-    if check_already_pushed(title_prefix):
-        print(f"[{bj_time.strftime('%H:%M:%S')}] 今日认知感悟「{title_prefix}」已存在，跳过推送。")
-        return
+    print(f"[{bj_time.strftime('%H:%M:%S')}] 开始检查今日认知感悟推送状态...")
 
-    print(f"[{bj_time.strftime('%H:%M:%S')}] 触发今日认知感悟推送，正在调用 Gemini 生成...")
-    prompt = """你是一位深谙认知心理学、心智模型与高阶决策的硬核导师。
-请为一位正在攻坚硬核学业与专业工程、注重个人心智进阶与高效率决策的大三工科生，定制生成今日【3条深度自我认知跃迁感悟】。
+    # 1. 抓取滴答清单全量上下文（进行中、已完成、以往感悟历史）
+    ongoing_tasks, completed_tasks, historical_insights = fetch_ticktick_context()
 
-【核心原则】：
-1. 坚决拒绝陈词滥调、廉价心灵鸡汤和泛泛而谈的励志口号。
-2. 聚焦于“刺破思维盲区、揭示真实心理机制、建立反脆弱思维与行动闭环”。
-3. 语言干练有力、一针见血，每条包含具体的“深度剖析”与“自我觉察提问”。
+    # 2. 查重：避免一天多次轮询产生重复卡片
+    for h in historical_insights:
+        if date_str in h.get("title", ""):
+            print(f"[{bj_time.strftime('%H:%M:%S')}] 今日认知感悟「{title_prefix}」已存在，跳过推送。")
+            return
 
-【三大维度划分】：
-- 第一条【思维模型与反直觉】：剖析核心认知偏差（如二阶思维、控制点归因、确认偏误、局部最优与全局最优）。
-- 第二条【行动阻力与真实自我】：刺破行动障碍（如战术勤奋掩盖战略懒惰、知觉与掌握的错觉、多巴胺陷阱、对不确定性的恐惧）。
-- 第三条【精力秩序与心智韧性】：探讨认知带宽管理（如情绪与事实解耦、决策疲劳、前额叶带宽保护、对抗熵增）。
+    print(f"[{bj_time.strftime('%H:%M:%S')}] 正在结合全局行动轨迹与过往感悟，调用 Gemini 生成深度认知感悟...")
 
-【严格输出排版】：
-请直接输出以下结构，不要有任何多余的开场白或客套话：
-### 1. 【主题标签】核心金句/论点
-- **深度剖析**：用 2-3 句话拆解底层逻辑与常见思维陷阱。
-- **自我觉察提问**：留一个直击本质、能够引发当下反思的落地问题。
+    ongoing_str = "\n".join([f"- {t}" for t in ongoing_tasks[:25]]) or "暂无明确未完成任务"
+    completed_str = "\n".join([f"- {t}" for t in completed_tasks[:25]]) or "暂无明确已完成记录"
+    
+    insights_history_list = []
+    for h in historical_insights[-5:]:  # 重点参考最近的几期感悟，形成递进与复利
+        insights_history_list.append(f"【往期卡片】{h['title']}\n{h['content']}")
+    insights_history_str = "\n\n".join(insights_history_list) or "今日为首期推送，暂无往期历史感悟。"
 
-### 2. 【主题标签】核心金句/论点
-- **深度剖析**：用 2-3 句话拆解底层逻辑与常见思维陷阱。
-- **自我觉察提问**：留一个直击本质、能够引发当下反思的落地问题。
+    prompt = f"""你是一位深谙认知心理学、心智模型、反脆弱决策与高阶工程学习的顶级思维导师。
+你的核心目标是陪伴一位正在攻坚硬核学业与专业工程、极具自省意识的青年实现【认知跃迁与知行合一】。
 
-### 3. 【主题标签】核心金句/论点
-- **深度剖析**：用 2-3 句话拆解底层逻辑与常见思维陷阱。
-- **自我觉察提问**：留一个直击本质、能够引发当下反思的落地问题。
+请深度结合他滴答清单中的真实个人轨迹、当前正在做的事、已完成的事以及过往已经推演过的感悟，定制生成今日【3条深度自我认知跃迁感悟】。
+
+==================================================
+【用户的真实待办与行动轨迹】
+1. 当前正在攻坚/进行中的任务（正在做的事情）：
+{ongoing_str}
+
+2. 以往已打卡/做过的事情（行为沉淀与轨迹）：
+{completed_str}
+
+3. 往期已推送过的认知感悟（必须参考与递进，切忌简单重复）：
+{insights_history_str}
+==================================================
+
+【生成核心原则】：
+1. **知行合一，严禁泛泛而谈**：每一条感悟必须精准锚定他当前真实的攻坚状态、正在做的事情或心理阻力（例如考研推导、硬核编码、背词耐力、多巴胺分心、深度专注等），严禁脱离实际打空拳。
+2. **认知复利与螺旋上升**：必须参考往期的感悟主题，进行深化、推演或指出进阶盲区，而不是每天像失忆一样推零散的句子。
+3. **语言锋利，刺破本质**：拒绝廉价煽情与空洞口号，以“心智模型剖析”与“直击灵魂的自省提问”为核心武器。
+
+【严格排版输出结构】：
+请直接输出以下结构，不要有任何多余的客套寒暄：
+### 1. 【结合当前攻坚】核心洞见论点
+- **深度剖析**：结合你当下正在做的事，拆解背后的认知模型、底层机制与潜在盲区（2-3句话）。
+- **自我觉察提问**：留一个针对今天具体行动的自省问题，促成认知闭环。
+
+### 2. 【结合行为轨迹/以往阻力】核心洞见论点
+- **深度剖析**：结合过往执行中的沉淀与卡点，指出进阶思维盲区（2-3句话）。
+- **自我觉察提问**：留一个直击内心防御机制的反思问题。
+
+### 3. 【往期感悟递进/心智秩序】核心洞见论点
+- **深度剖析**：在前期认知的基础上更进一步，拆解认知带宽、精力分配或决策反脆弱的底层秩序（2-3句话）。
+- **自我觉察提问**：留一个检验今天知行合一的闭环问题。
 """
 
     result_text = call_gemini_with_retry(prompt)
@@ -119,7 +173,7 @@ def push_daily_insights():
 
     create_res = requests.post("https://api.dida365.com/open/v1/task", json=new_task, headers=HEADERS, timeout=15)
     if create_res.status_code == 200:
-        print(f"今日认知感悟已成功写入滴答清单【今天】视图！标题：{new_task['title']}")
+        print(f"今日深度认知感悟已成功写入滴答清单【今天】视图！标题：{new_task['title']}")
     else:
         print(f"写入滴答清单失败: HTTP {create_res.status_code} - {create_res.text}")
 
