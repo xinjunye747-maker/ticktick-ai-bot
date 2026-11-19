@@ -54,6 +54,8 @@ def fetch_ticktick_context():
             return ongoing_tasks, completed_tasks, historical_insights
 
         projects = res.json()
+        if not any((p.get("id") == "inbox" or str(p.get("id", "")).startswith("inbox")) for p in projects):
+            projects.append({"id": "inbox", "name": "Inbox"})
         for p in projects:
             p_id = p.get("id")
             p_name = p.get("name", "未命名清单")
@@ -254,5 +256,8 @@ def process_tasks():
             print(f"任务「{title}」已完成写入并自动打卡！")
 
 if __name__ == "__main__":
-    push_daily_insights()
-    process_tasks()
+    run_mode = os.getenv("RUN_MODE", "all")
+    if run_mode in ("all", "daily"):
+        push_daily_insights()
+    if run_mode in ("all", "tasks"):
+        process_tasks()
